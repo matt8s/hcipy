@@ -1,9 +1,11 @@
 import numpy as np
+from array_api_compat import device
 
 from .fast_fourier_transform import FastFourierTransform, make_fft_grid, _numexpr_grid_shift
 from .fourier_transform import make_fourier_transform
-from ..field import Field, field_dot, field_conjugate_transpose, CartesianGrid, RegularCoords, make_uniform_grid
+from ..field import Field, NewStyleField, field_dot, field_conjugate_transpose, CartesianGrid, RegularCoords, make_uniform_grid
 from .._math import fft as _fft_module
+from .._math.backends import array_namespace
 
 class FourierFilter(object):
     '''A filter in the Fourier domain.
@@ -24,6 +26,14 @@ class FourierFilter(object):
         The amount of zeropadding to perform in the real domain. A value
         of 1 denotes no zeropadding. Zeropadding increases the resolution in the
         Fourier domain and therefore reduces aliasing/wrapping effects.
+
+    Notes
+    -----
+    With a NumPy input grid, scalar filters also accept explicit NewStyleField
+    inputs on Array API backends with FFT support. Grid and callable kernel
+    setup remain on the CPU. The kernel and scratch buffer are cached on the
+    input array's backend/device; repeated operations do not copy field data
+    to the CPU. Instances use mutable scratch space and are not thread-safe.
     '''
     def __init__(self, input_grid, transfer_function, q=1):
         fft = FastFourierTransform(input_grid, q)
@@ -37,24 +47,31 @@ class FourierFilter(object):
 
         self._transfer_function = None
         self.internal_array = None
+        self._backend_key = None
 
     def _compute_functions(self, field):
-        if self._transfer_function is None or self._transfer_function.dtype != field.dtype:
+        data = field.data if isinstance(field, NewStyleField) else np.asarray(field)
+        xp = array_namespace(data)
+        backend_key = (xp, device(data), data.dtype)
+        backend_changed = self._backend_key != backend_key
+        if self._transfer_function is None or backend_changed:
             if hasattr(self.transfer_function, '__call__'):
                 tf = self.transfer_function(self.internal_grid)
             else:
                 tf = self.transfer_function.copy()
 
-            tf = np.fft.ifftshift(tf.shaped, axes=tuple(range(-self.input_grid.ndim, 0)))
-            self._transfer_function = tf.astype(field.dtype, copy=False)
+            tf = tf.shaped
+            tf = tf.data if isinstance(tf, NewStyleField) else np.asarray(tf)
+            tf = xp.asarray(tf, dtype=data.dtype, device=device(data))
+            self._transfer_function = xp.fft.ifftshift(tf, axes=tuple(range(-self.input_grid.ndim, 0)))
 
-        recompute_internal_array = self.internal_array is None
-        recompute_internal_array = recompute_internal_array or (self.internal_array.ndim != (field.grid.ndim + field.tensor_order))
-        recompute_internal_array = recompute_internal_array or (self.internal_array.dtype != field.dtype)
-        recompute_internal_array = recompute_internal_array or not np.array_equal(self.internal_array.shape[:field.tensor_order], field.tensor_shape)
+        shape = field.tensor_shape + self.internal_grid.shape
+        recompute_internal_array = self.internal_array is None or backend_changed
+        recompute_internal_array = recompute_internal_array or self.internal_array.shape != shape
 
         if recompute_internal_array:
-            self.internal_array = self.internal_grid.zeros(field.tensor_shape, field.dtype).shaped
+            self.internal_array = xp.zeros(shape, dtype=data.dtype, device=device(data))
+        self._backend_key = backend_key
 
     def forward(self, field):
         '''Return the forward filtering of the input field.
@@ -102,14 +119,17 @@ class FourierFilter(object):
             The filtered field.
         '''
         self._compute_functions(field)
+        data = field.data if isinstance(field, NewStyleField) else np.asarray(field)
+        xp = array_namespace(data)
+        shaped = xp.reshape(data, field.tensor_shape + field.grid.shape)
 
         if self.cutout is None:
-            f = field.shaped
+            f = shaped
         else:
             f = self.internal_array
-            f[:] = 0
+            f[...] = 0
             c = tuple([slice(None)] * field.tensor_order) + self.cutout
-            f[c] = field.shaped
+            f[c] = shaped
 
         # Don't overwrite f if it shares memory with the input field.
         overwrite_x = self.cutout is not None
@@ -132,7 +152,7 @@ class FourierFilter(object):
         else:
             # The transfer function is a scalar field.
             if adjoint:
-                tf = self._transfer_function.conj()
+                tf = xp.conj(self._transfer_function)
             else:
                 tf = self._transfer_function
 
@@ -144,11 +164,11 @@ class FourierFilter(object):
 
         s = f.shape[:-self.internal_grid.ndim] + (-1,)
         if self.cutout is None:
-            res = f.reshape(s)
+            res = xp.reshape(f, s)
         else:
-            res = f[c].reshape(s)
+            res = xp.reshape(f[c], s)
 
-        return Field(res, self.input_grid)
+        return type(field)(res, self.input_grid)
 
 def _make_fourier_kernel_filter(input_grid, kernel, q=1, conjugate=False):
     '''Internal helper that returns a :class:`FourierFilter` for convolution or correlation.

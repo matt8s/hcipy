@@ -2,7 +2,8 @@ import copy
 import numpy as np
 import numexpr as ne
 
-from ..field import Field, field_dot, field_kron
+from ..field import Field, NewStyleField, field_dot, field_kron
+from .._math.backends import array_namespace
 
 _U_matrix = 1 / np.sqrt(2) * np.array([
     [1, 0, 0, 1],
@@ -79,6 +80,12 @@ class Wavefront(object):
         if not hasattr(electric_field, 'grid'):
             raise ValueError('The electric field must be a Field.')
 
+        if isinstance(electric_field, NewStyleField):
+            xp = array_namespace(electric_field.data)
+            dtype = xp.complex64 if electric_field.dtype in (xp.float32, xp.complex64) else xp.complex128
+            self._electric_field = NewStyleField(xp.astype(electric_field.data, dtype, copy=False), electric_field.grid)
+            return
+
         # Cast to complex with correct bit depth
         if electric_field.dtype == 'float32' or electric_field.dtype == 'complex64':
             dtype = 'complex64'
@@ -115,6 +122,8 @@ class Wavefront(object):
         in the plane.
         '''
         if self.is_scalar:
+            if isinstance(self.electric_field, NewStyleField):
+                return abs(self.electric_field)**2
             # This is a scaler field.
             intensity = ne.evaluate('real(abs(elec))**2', local_dict={'elec': self.electric_field})
             return Field(intensity, self.electric_field.grid)
@@ -342,6 +351,14 @@ class Wavefront(object):
         '''The power of each pixel in the wavefront.
         '''
         if self.electric_field.is_scalar_field or self.electric_field.is_vector_field:
+            if isinstance(self.electric_field, NewStyleField):
+                xp = array_namespace(self.electric_field.data)
+                weights = self.grid.weights
+                if not np.isscalar(weights):
+                    weights = xp.asarray(weights, dtype=xp.real(self.electric_field.data).dtype)
+                else:
+                    weights = float(weights)
+                return abs(self.electric_field)**2 * weights
             variables = {'field': self.electric_field, 'weights': self.grid.weights}
             power = ne.evaluate('real(abs(field))**2 * weights', local_dict=variables)
 
@@ -353,11 +370,16 @@ class Wavefront(object):
     def total_power(self):
         '''The total power in this wavefront.
         '''
-        return np.sum(self.power)
+        power = self.power
+        if isinstance(power, NewStyleField):
+            return array_namespace(power.data).sum(power.data)
+        return np.sum(power)
 
     @total_power.setter
     def total_power(self, p):
-        self.electric_field *= np.sqrt(p / self.total_power)
+        total_power = self.total_power
+        xp = array_namespace(total_power) if isinstance(self.electric_field, NewStyleField) else np
+        self.electric_field *= xp.sqrt(p / total_power)
 
 def jones_to_mueller(jones_matrix):
     '''Convert a Jones matrix to a Mueller matrix.
