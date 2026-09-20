@@ -6,6 +6,42 @@ from ..propagation import FresnelPropagator
 
 import numpy as np
 from scipy.special import gamma, kv
+from scipy.integrate import quad_vec
+
+def _validate_inner_scale(inner_scale):
+    if not np.isscalar(inner_scale) or not np.isfinite(inner_scale) or inner_scale < 0:
+        raise ValueError('inner_scale must be a finite nonnegative scalar in meters.')
+
+def _inner_scale_phase_statistics(r0, L0, inner_scale, structure_function=False):
+    # Gaussian-mixture representation of (k^2 + a^2)^(-11/6).
+    # Integrating k analytically avoids oscillatory Hankel quadrature. With
+    # s = a^2 t and z = log(s), the remaining integral is smooth and positive.
+    if not np.isfinite(L0) or L0 <= 0:
+        raise ValueError('Nonzero inner-scale covariance requires a finite positive L0.')
+    a = 2 * np.pi / L0
+    q = (a * inner_scale / 5.92) ** 2
+    nu = 11 / 6
+    normalization = 0.0229 * (2 * np.pi) ** (11 / 3) * r0 ** (-5 / 3)
+    normalization *= a ** (2 - 2 * nu) / (4 * np.pi * gamma(nu))
+
+    def func(grid):
+        radii, inverse = np.unique(np.asarray(grid.as_('polar').r), return_inverse=True)
+        squared_radius = (a * radii) ** 2 / 4
+
+        def integrand(z):
+            s = np.exp(z)
+            exponent = -squared_radius / (s + q)
+            radial = -2 * np.expm1(exponent) if structure_function else np.exp(exponent)
+            return np.exp(nu * z - s) / (s + q) * radial
+
+        # Omitted tails are below double-precision relevance for resolved
+        # separations. Integrate dimensionless quantities before scaling by r0.
+        result, _, info = quad_vec(integrand, -80, 5, epsabs=1e-25, epsrel=1e-11, full_output=True)
+        if not info.success:
+            raise RuntimeError('Inner-scale phase-statistics quadrature did not converge.')
+        return Field(normalization * result[inverse], grid)
+
+    return func
 
 class AtmosphericLayer(OpticalElement):
     '''A single infinitely-thin atmospheric layer.
@@ -116,6 +152,20 @@ class AtmosphericLayer(OpticalElement):
         '''The two-dimensional velocity of the layer.
         '''
         return self._velocity
+
+    @property
+    def inner_scale(self):
+        '''The dissipation inner scale in meters (zero for no cutoff).
+
+        Subclasses supporting a nonzero inner scale override this property.
+        '''
+        return 0
+
+    @inner_scale.setter
+    def inner_scale(self, inner_scale):
+        _validate_inner_scale(inner_scale)
+        if inner_scale != 0:
+            raise NotImplementedError('This atmospheric layer does not support an inner scale.')
 
     @velocity.setter
     def velocity(self, velocity):
@@ -295,6 +345,20 @@ class MultiLayerAtmosphere(OpticalElement):
             l.outer_scale = L0
 
     @property
+    def inner_scale(self):
+        '''The first layer's inner scale in meters; setting updates all layers.
+
+        Set individual layer properties to specify a height-dependent profile.
+        '''
+        return self.layers[0].inner_scale
+
+    @inner_scale.setter
+    def inner_scale(self, inner_scale):
+        _validate_inner_scale(inner_scale)
+        for layer in self.layers:
+            layer.inner_scale = inner_scale
+
+    @property
     def t(self):
         '''The current time.
         '''
@@ -322,7 +386,7 @@ class MultiLayerAtmosphere(OpticalElement):
             wf = el.backward(wf)
         return wf
 
-def phase_covariance_von_karman(r0, L0):
+def phase_covariance_von_karman(r0, L0, inner_scale=0):
     '''Return a Field generator for the phase covariance function for Von Karman turbulence.
 
     Parameters
@@ -331,12 +395,21 @@ def phase_covariance_von_karman(r0, L0):
         The Fried parameter in meters.
     L0 : scalar
         The outer scale in meters.
+    inner_scale : scalar
+        Nonnegative dissipation scale in meters. Zero retains the legacy analytic
+        covariance. Positive values use numerical quadrature of the modified
+        von Karman PSD and require a finite positive outer scale. This includes
+        the continuous piston variance, unlike a sampled screen with DC removed.
 
     Returns
     -------
     Field generator
         The phase covariance Field generator.
     '''
+    _validate_inner_scale(inner_scale)
+    if inner_scale > 0:
+        return _inner_scale_phase_statistics(r0, L0, inner_scale)
+
     def func(grid):
         r = grid.as_('polar').r + 1e-10
 
@@ -347,9 +420,10 @@ def phase_covariance_von_karman(r0, L0):
         e = kv(5 / 6, 2 * np.pi * r / L0)
 
         return Field(a * b * c * d * e, grid)
+
     return func
 
-def phase_structure_function_von_karman(r0, L0):
+def phase_structure_function_von_karman(r0, L0, inner_scale=0):
     '''Return a Field generator for the phase structure function for Von Karman turbulence.
 
     Parameters
@@ -358,12 +432,20 @@ def phase_structure_function_von_karman(r0, L0):
         The Fried parameter in meters.
     L0 : scalar
         The outer scale in meters.
+    inner_scale : scalar
+        Nonnegative dissipation scale in meters. Zero retains the legacy analytic
+        result. Positive values integrate the modified von Karman PSD with a
+        cancellation-safe structure-function kernel; L0 must be finite and positive.
 
     Returns
     -------
     Field generator
         The phase structure Field generator.
     '''
+    _validate_inner_scale(inner_scale)
+    if inner_scale > 0:
+        return _inner_scale_phase_statistics(r0, L0, inner_scale, structure_function=True)
+
     def func(grid):
         r = grid.as_('polar').r + 1e-10
 
@@ -375,9 +457,10 @@ def phase_structure_function_von_karman(r0, L0):
         f = kv(5 / 6, 2 * np.pi * r / L0)
 
         return Field(a * b * c * (d - e * f), grid)
+
     return func
 
-def power_spectral_density_von_karman(r0, L0):
+def power_spectral_density_von_karman(r0, L0, inner_scale=0):
     '''Return a Field generator for the power spectral density function for Von Karman turbulence.
 
     Parameters
@@ -386,20 +469,36 @@ def power_spectral_density_von_karman(r0, L0):
         The Fried parameter in meters.
     L0 : scalar
         The outer scale in meters.
+    inner_scale : scalar
+        Nonnegative dissipation scale in meters; zero (default) retains the
+        unmodified spectrum. A positive value applies the modified von Karman
+        cutoff exp(-(kappa * inner_scale / 5.92)**2), with kappa in radians/m.
+
+    Notes
+    -----
+    The input grid is angular spatial frequency, but the returned density uses
+    the cycles/m convention: integrate with d^2 kappa / (2 pi)^2. The DC sample
+    is removed. The Fried parameter specifies inertial-range strength, not a
+    renormalized total variance after applying the inner-scale cutoff.
 
     Returns
     -------
     Field generator
         The power spectral density Field generator.
     '''
+    _validate_inner_scale(inner_scale)
+
     def func(grid):
         u = grid.as_('polar').r + 1e-10
         u0 = 2 * np.pi / L0
 
         res = 0.0229 * ((u**2 + u0**2) / (2 * np.pi)**2)**(-11 / 6.) * r0**(-5 / 3)
+        if inner_scale > 0:
+            res *= np.exp(-((u * inner_scale / 5.92) ** 2))
         res[u < 1e-9] = 0
 
         return Field(res, grid)
+
     return func
 
 def Cn_squared_from_fried_parameter(r0, wavelength=500e-9):  # noqa: N802

@@ -5,7 +5,7 @@ from ..dev import deprecated_name_changed
 import numpy as np
 import warnings
 
-def make_mauna_kea_atmospheric_layers(input_grid, cn_squared=None, outer_scale=None):
+def make_mauna_kea_atmospheric_layers(input_grid, cn_squared=None, outer_scale=None, *, inner_scale=0):
     '''Create a multi-layer atmosphere for the Mauna Kea observatory site.
 
     The layer parameters are taken from [Guyon2005]_, in turn derived
@@ -27,6 +27,9 @@ def make_mauna_kea_atmospheric_layers(input_grid, cn_squared=None, outer_scale=N
     outer_scale : scalar or None
         The outer scale of the atmosphere. If this is None (default), then an
         outer scale of 10m is used.
+    inner_scale : scalar
+        Dissipation scale in meters for all layers (default zero). This is a
+        user-selected model parameter, not a measured value from the site profile.
 
     Returns
     -------
@@ -47,9 +50,10 @@ def make_mauna_kea_atmospheric_layers(input_grid, cn_squared=None, outer_scale=N
 
     layers = []
     for h, v, cn in zip(heights, velocities, cn_squared_values):
-        layers.append(InfiniteAtmosphericLayer(input_grid, cn, outer_scale, v, h, 2))
+        layers.append(InfiniteAtmosphericLayer(input_grid, cn, outer_scale, v, h, 2, inner_scale=inner_scale))
 
     return layers
+
 
 @deprecated_name_changed(make_mauna_kea_atmospheric_layers)
 def make_standard_atmospheric_layers(input_grid, L0=10):
@@ -74,7 +78,7 @@ def make_standard_atmospheric_layers(input_grid, L0=10):
     '''
     return make_mauna_kea_atmospheric_layers(input_grid, outer_scale=L0)
 
-def make_las_campanas_atmospheric_layers(input_grid, cn_squared=None, outer_scale=None, r0=0.16, L0=25, wavelength=550e-9):
+def make_las_campanas_atmospheric_layers(input_grid, cn_squared=None, outer_scale=None, r0=0.16, L0=25, wavelength=550e-9, *, inner_scale=0):
     '''Create a multi-layer atmosphere for the Las Campanas Observatory site.
 
     The layer parameters are taken from [Males2019]_ who based it on site testing from [Prieto2010]_ and [Osip2011]_ .
@@ -107,6 +111,8 @@ def make_las_campanas_atmospheric_layers(input_grid, cn_squared=None, outer_scal
     wavelength : scalar
         The wavelength in meters at which to calculate the Fried parameter (default: 550nm).
         This parameter is deprecated and should not be used. Use `cn_squared` instead.
+    inner_scale : scalar
+        User-selected dissipation scale in meters for all layers (default zero).
 
     Returns
     -------
@@ -142,11 +148,11 @@ def make_las_campanas_atmospheric_layers(input_grid, cn_squared=None, outer_scal
 
     layers = []
     for h, v, cn in zip(heights, velocities, cn_squared_values):
-        layers.append(InfiniteAtmosphericLayer(input_grid, cn, outer_scale, v, h, 2))
+        layers.append(InfiniteAtmosphericLayer(input_grid, cn, outer_scale, v, h, 2, inner_scale=inner_scale))
 
     return layers
 
-def make_keck_atmospheric_layers(input_grid, cn_squared=None, outer_scale=20):
+def make_keck_atmospheric_layers(input_grid, cn_squared=None, outer_scale=20, *, inner_scale=0):
     '''Creates a multi-layer atmosphere for Keck Observatory.
 
     The atmospheric parameters are based off of [Keck AO note 303]_. The default
@@ -164,6 +170,8 @@ def make_keck_atmospheric_layers(input_grid, cn_squared=None, outer_scale=20):
     outer_scale : scalar or None
         The outer scale of the atmosphere. If this is None (default), then an
         outer scale of 20m is used.
+    inner_scale : scalar
+        User-selected dissipation scale in meters for all layers (default zero).
 
     Returns
     -------
@@ -184,11 +192,11 @@ def make_keck_atmospheric_layers(input_grid, cn_squared=None, outer_scale=20):
 
     layers = []
     for h, v, cn in zip(heights, velocities, cn_squared_values):
-        layers.append(InfiniteAtmosphericLayer(input_grid, cn, outer_scale, v, h, 2))
+        layers.append(InfiniteAtmosphericLayer(input_grid, cn, outer_scale, v, h, 2, inner_scale=inner_scale))
 
     return layers
 
-def make_standard_atmosphere(input_grid, cn_squared=None, outer_scale=None, site='mauna_kea', **kwargs):
+def make_standard_atmosphere(input_grid, cn_squared=None, outer_scale=None, site='mauna_kea', *, inner_scale=0, **kwargs):
     '''Make a standard atmosphere for one of the built-in sites.
 
     Parameters
@@ -201,6 +209,8 @@ def make_standard_atmosphere(input_grid, cn_squared=None, outer_scale=None, site
         outer scale of your requested site will be used.
     site : {'mauna_kea', 'las_campanas', 'keck'}
         The site of the standard atmosphere. This has to be one of the implemented sites.
+    inner_scale : scalar
+        User-selected dissipation scale in meters for all layers (default zero).
     **kwargs : kwargs
         Any additional kwargs will be fed through to the MultiLayerAtmosphere initializer.
 
@@ -215,11 +225,11 @@ def make_standard_atmosphere(input_grid, cn_squared=None, outer_scale=None, site
         If the requested `site` is not one of the implemented sites.
     '''
     if site == 'mauna_kea':
-        layers = make_mauna_kea_atmospheric_layers(input_grid, cn_squared, outer_scale)
+        layers = make_mauna_kea_atmospheric_layers(input_grid, cn_squared, outer_scale, inner_scale=inner_scale)
     elif site == 'las_campanas':
-        layers = make_las_campanas_atmospheric_layers(input_grid, cn_squared, outer_scale)
+        layers = make_las_campanas_atmospheric_layers(input_grid, cn_squared, outer_scale, inner_scale=inner_scale)
     elif site == 'keck':
-        layers = make_keck_atmospheric_layers(input_grid, cn_squared, outer_scale)
+        layers = make_keck_atmospheric_layers(input_grid, cn_squared, outer_scale, inner_scale=inner_scale)
     else:
         raise ValueError('Site unknown.')
 

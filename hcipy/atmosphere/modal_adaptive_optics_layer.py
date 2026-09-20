@@ -30,6 +30,7 @@ class ModalAdaptiveOpticsLayer(AtmosphericLayer):
         The framerate of the adaptive optics system in 1/time. If this is None,
         the layer will be reconstructed every call to `evolve_until()`.
     """
+
     def __init__(self, layer, controlled_modes, lag, framerate=None):
         self.layer = layer
 
@@ -159,9 +160,20 @@ class ModalAdaptiveOpticsLayer(AtmosphericLayer):
         self.layer.L0 = L0
 
     def reset(self):
-        """Resets the corrected coefficients and the underlying atmospheric layer.
-        """
+        """Resets the corrected coefficients and the underlying atmospheric layer."""
         self.corrected_coeffs = []
         self.layer.reset()
 
+        self._reconstruct_wavefront()
+
+    @property
+    def inner_scale(self):
+        '''The wrapped layer's dissipation scale in meters.'''
+        return self.layer.inner_scale
+
+    @inner_scale.setter
+    def inner_scale(self, inner_scale):
+        self.layer.inner_scale = inner_scale
+        self.corrected_coeffs = []
+        self._t = self.layer.t
         self._reconstruct_wavefront()

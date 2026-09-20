@@ -1,6 +1,7 @@
 from __future__ import division
 
 from .atmospheric_model import AtmosphericLayer, phase_covariance_von_karman, fried_parameter_from_Cn_squared
+from .atmospheric_model import _validate_inner_scale
 from ..field import Field, RegularCoords, UnstructuredCoords, CartesianGrid
 from .finite_atmospheric_layer import FiniteAtmosphericLayer
 from .._math.subpixel_shift import subpixel_shift
@@ -73,14 +74,35 @@ class InfiniteAtmosphericLayer(AtmosphericLayer):
         be passed to a numpy.SeedSequency to derive the initial BitGenerator state.
         If a BitGenerator or Generator are passed, these will be wrapped and used
         instead. Default: None.
+    inner_scale : scalar
+        Nonnegative dissipation scale in meters, default zero. Positive values
+        apply the modified von Karman cutoff to both the initial screen and
+        extension covariance, and require finite positive L0. Changing this
+        property rebuilds the covariance and resets the selected realization
+        to t=0. Very smooth screens can yield ill-conditioned covariance matrices.
 
     Raises
     ------
     ValueError
         When the input grid is not cartesian, regularly spaced and two-dimensional.
     '''
-    def __init__(self, input_grid, Cn_squared, L0=np.inf, velocity=0, height=0, stencil_length=2, use_interpolation=None, interpolation_order=5, seed=None):
+    def __init__(
+        self,
+        input_grid,
+        Cn_squared,
+        L0=np.inf,
+        velocity=0,
+        height=0,
+        stencil_length=2,
+        use_interpolation=None,
+        interpolation_order=5,
+        seed=None,
+        *,
+        inner_scale=0,
+    ):
         self._initialized = False
+        _validate_inner_scale(inner_scale)
+        self._inner_scale = inner_scale
 
         AtmosphericLayer.__init__(self, input_grid, Cn_squared, L0, velocity, height)
 
@@ -153,7 +175,7 @@ class InfiniteAtmosphericLayer(AtmosphericLayer):
         self.stencil_left_idx = np.where(self.stencil_left)[0]
 
     def _make_covariance_matrices(self):
-        phase_covariance = phase_covariance_von_karman(fried_parameter_from_Cn_squared(1, 1), self.L0)
+        phase_covariance = phase_covariance_von_karman(fried_parameter_from_Cn_squared(1, 1), self.L0, self.inner_scale)
 
         # Vertical
         x = np.concatenate((self.input_grid.x[self.stencil_bottom], self.new_grid_bottom.x))
@@ -217,7 +239,9 @@ class InfiniteAtmosphericLayer(AtmosphericLayer):
     def _make_initial_phase_screen(self):
         oversampling = 16
 
-        layer = FiniteAtmosphericLayer(self.input_grid, self.Cn_squared, self.outer_scale, self.velocity, self.height, oversampling, self.rng)
+        layer = FiniteAtmosphericLayer(
+            self.input_grid, self.Cn_squared, self.outer_scale, self.velocity, self.height, oversampling, self.rng, inner_scale=self.inner_scale
+        )
 
         self._achromatic_screen = layer.phase_for(1)
         self._shifted_achromatic_screen = self._achromatic_screen
@@ -394,6 +418,43 @@ class InfiniteAtmosphericLayer(AtmosphericLayer):
 
     @outer_scale.setter
     def outer_scale(self, L0):
+        if self.inner_scale > 0 and (not np.isfinite(L0) or L0 <= 0):
+            raise ValueError('Nonzero inner-scale covariance requires a finite positive L0.')
+        if self.inner_scale > 0 and self._initialized:
+            if L0 == self._L0:
+                return
+            updated = copy.copy(self)
+            updated._L0 = L0
+            updated._recalculate_matrices()
+            updated.reset()
+            self.__dict__.update(updated.__dict__)
+            return
         self._L0 = L0
 
         self._recalculate_matrices()
+
+    @property
+    def inner_scale(self):
+        '''Dissipation scale in meters. Changing it rebuilds matrices and resets to t=0.
+
+        Reset replays the selected seed; an evolved screen cannot be retained
+        consistently after changing its covariance. Large inner scales relative
+        to the pixel spacing can make the covariance matrices ill-conditioned.
+        '''
+        return self._inner_scale
+
+    @inner_scale.setter
+    def inner_scale(self, inner_scale):
+        _validate_inner_scale(inner_scale)
+        if inner_scale > 0 and (not np.isfinite(self.L0) or self.L0 <= 0):
+            raise ValueError('Nonzero inner-scale covariance requires a finite positive L0.')
+        if inner_scale == self._inner_scale:
+            return
+        # Build on a shallow copy: failed factorizations must leave the current
+        # covariance, screen and RNG intact. reset() copies the selected RNG.
+        updated = copy.copy(self)
+        updated._inner_scale = inner_scale
+        updated._recalculate_matrices()
+        if updated._initialized:
+            updated.reset()
+        self.__dict__.update(updated.__dict__)

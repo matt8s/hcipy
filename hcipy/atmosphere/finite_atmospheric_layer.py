@@ -1,4 +1,5 @@
 from .atmospheric_model import AtmosphericLayer, power_spectral_density_von_karman, fried_parameter_from_Cn_squared
+from .atmospheric_model import _validate_inner_scale
 import numpy as np
 from ..util import SpectralNoiseFactoryMultiscale
 
@@ -44,10 +45,15 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
         be passed to a numpy.SeedSequency to derive the initial BitGenerator state.
         If a BitGenerator or Generator are passed, these will be wrapped and used
         instead. Default: None.
+    inner_scale : scalar
+        Nonnegative dissipation scale in meters, default zero. A positive value
+        uses the modified von Karman exponential cutoff. Resolve the cutoff
+        frequency 5.92 / inner_scale with the spatial grid for accurate gradients.
     '''
-    def __init__(self, input_grid, Cn_squared, L0=np.inf, velocity=0, height=0, oversampling=2, seed=None):
+    def __init__(self, input_grid, Cn_squared, L0=np.inf, velocity=0, height=0, oversampling=2, seed=None, *, inner_scale=0):
         self._noise = None
         self._achromatic_screen = None
+        self.inner_scale = inner_scale
 
         AtmosphericLayer.__init__(self, input_grid, Cn_squared, L0, velocity, height)
 
@@ -89,7 +95,7 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
         # so that the next independent reset selects the following realization.
         self.rng = copy.deepcopy(self._original_rng)
 
-        self.psd = power_spectral_density_von_karman(fried_parameter_from_Cn_squared(self.Cn_squared, 1), self.L0)
+        self.psd = power_spectral_density_von_karman(fried_parameter_from_Cn_squared(self.Cn_squared, 1), self.L0, self.inner_scale)
 
         self.noise_factory = SpectralNoiseFactoryMultiscale(self.psd, self.input_grid, self.oversampling)
         self._noise = self.noise_factory.make_random(self.rng)
@@ -169,5 +175,17 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
     @outer_scale.setter
     def outer_scale(self, L0):  # noqa: N802
         self._L0 = L0
+        self._noise = None
+        self._achromatic_screen = None
+
+    @property
+    def inner_scale(self):
+        '''Dissipation scale in meters; changes replay the selected seed at the current time.'''
+        return self._inner_scale
+
+    @inner_scale.setter
+    def inner_scale(self, inner_scale):
+        _validate_inner_scale(inner_scale)
+        self._inner_scale = inner_scale
         self._noise = None
         self._achromatic_screen = None
