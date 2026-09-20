@@ -362,10 +362,10 @@ class SpectralNoiseMultiscale(SpectralNoise):
             The shift in the grid axes.
         '''
         S_1 = [shift[i] * self.coords_1[i] for i in range(len(self.coords_1))]
-        S_1 = sum(np.ix_(*S_1))
+        S_1 = sum(np.ix_(*S_1[::-1]))
 
         S_2 = [shift[i] * self.coords_2[i] for i in range(len(self.coords_2))]
-        S_2 = sum(np.ix_(*S_2))
+        S_2 = sum(np.ix_(*S_2[::-1]))
 
         self.C_1 *= np.exp(-1j * S_1.ravel())
         self.C_2 *= np.exp(-1j * S_2.ravel())

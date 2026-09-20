@@ -18,6 +18,22 @@ def psd(grid):
     return hp.power_spectral_density_von_karman(0.01, 0.02)(grid)
 
 
+def evaluate_multiscale_direct(noise, shift):
+    """Evaluate both spectral bands without using either transform."""
+    output_grid = noise.factory.output_grid
+    result = np.zeros(output_grid.size)
+    for coefficients, frequency_grid in (
+            (noise.C_1, noise.factory.input_grid_1),
+            (noise.C_2, noise.factory.input_grid_2)):
+        phase = sum(
+            (np.asarray(coord) - displacement)[:, None] * np.asarray(frequency)[None, :]
+            for coord, frequency, displacement in zip(output_grid.coords, frequency_grid.coords, shift)
+        )
+        result += (np.real(np.exp(1j * phase) @ np.asarray(coefficients))
+                   * frequency_grid.weights / (2 * np.pi)**frequency_grid.ndim)
+    return result
+
+
 @pytest.mark.parametrize('oversample', [1, 2])
 def test_legacy_seed_and_period(oversample):
     grid = hp.make_uniform_grid([12, 8], [0.08, 0.06])
@@ -44,6 +60,35 @@ def test_legacy_shift_axes(axis):
     shifted = noise.shifted(shift)().shaped
     np.testing.assert_allclose(shifted, np.roll(original, 1, axis=1 - axis), atol=1e-12)
     np.testing.assert_array_equal(noise().shaped, original)
+
+
+@pytest.mark.parametrize('axis', [0, 1])
+def test_multiscale_shift_axes_on_rectangular_grid(axis):
+    grid = hp.make_uniform_grid([12, 8], [0.08, 0.06])
+    noise = hp.SpectralNoiseFactoryMultiscale(psd, grid, 1).make_random(12)
+    original = noise().shaped.copy()
+    shift = np.zeros(2)
+    shift[axis] = grid.delta[axis]
+
+    shifted = noise.shifted(shift)
+    np.testing.assert_allclose(shifted(), evaluate_multiscale_direct(noise, shift), atol=2e-12)
+    np.testing.assert_allclose(shifted().shaped, np.roll(original, 1, axis=1 - axis), atol=2e-12)
+    np.testing.assert_allclose(np.abs(shifted.C_1), np.abs(noise.C_1), rtol=5e-16, atol=0)
+    np.testing.assert_allclose(np.abs(shifted.C_2), np.abs(noise.C_2), rtol=5e-16, atol=0)
+    np.testing.assert_array_equal(noise().shaped, original)
+
+
+@pytest.mark.parametrize('shift', [[0.0007, -0.0013], [0.002, 0], [0, -0.001]])
+def test_multiscale_subpixel_shift_against_direct_quadrature(shift):
+    grid = hp.make_uniform_grid([12, 8], [0.08, 0.06])
+    factory = hp.SpectralNoiseFactoryMultiscale(psd, grid, 2)
+    noise = factory.make_random(23)
+    replay = factory.make_random(23)
+
+    np.testing.assert_array_equal(noise.C_1, replay.C_1)
+    np.testing.assert_array_equal(noise.C_2, replay.C_2)
+    np.testing.assert_allclose(noise.shifted(shift)(), evaluate_multiscale_direct(noise, shift),
+                               atol=2e-12)
 
 
 @pytest.mark.parametrize('dtype,tolerance', [('float32', 3e-6), ('float64', 3e-12)])

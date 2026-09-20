@@ -27,6 +27,30 @@ def test_finite_layer_absolute_time_and_rewind():
     np.testing.assert_array_equal(layer.center, layer.velocity * 0.05)
 
 
+@pytest.mark.parametrize('axis', [0, 1])
+def test_finite_layer_frozen_flow_on_rectangular_grid(axis):
+    grid = hp.make_uniform_grid([12, 8], [0.08, 0.06])
+    travel_time = 0.2
+    velocity = np.zeros(2)
+    velocity[axis] = grid.delta[axis] / travel_time
+    layer = hp.FiniteAtmosphericLayer(grid, STRENGTH, 0.02, velocity=velocity,
+                                      oversampling=2, seed=12)
+    original = layer.achromatic_screen.shaped.copy()
+
+    layer.evolve_until(travel_time)
+    shifted = layer.achromatic_screen.shaped
+    array_axis = 1 - axis
+    interior = [slice(None), slice(None)]
+    reference = [slice(None), slice(None)]
+    interior[array_axis] = slice(1, None)
+    reference[array_axis] = slice(None, -1)
+
+    # Oversampling makes the low-frequency component nonperiodic over one
+    # output-grid extent, so compare frozen flow only where no wrap is needed.
+    np.testing.assert_allclose(shifted[tuple(interior)], original[tuple(reference)],
+                               rtol=2e-12, atol=2e-12)
+
+
 @pytest.mark.parametrize('independent', [False, True])
 def test_finite_layer_reset_restores_origin_and_replay(independent):
     layer = make_layer()
