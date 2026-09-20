@@ -1,8 +1,11 @@
 import numpy as np
 import copy
 
-from ..field import Field
+from ..field import Field, NewStyleField
 from ..fourier import FastFourierTransform, MatrixFourierTransform
+from .._math.backends import array_namespace
+from .._math.random import RandomGenerator, make_random_generator
+from array_api_compat import device
 
 class SpectralNoiseFactory(object):
     def __init__(self, psd, output_grid):
@@ -119,8 +122,30 @@ class SpectralNoiseFactoryFFT(SpectralNoiseFactory):
         The amount by which to oversample to grid. For values higher than one,
         the spectral noise can be shifted by that fraction of the grid extent
         without wrapping.
+    xp : array namespace or None, optional
+        Opt into backend-native sampling and NewStyleField output. The default
+        None preserves legacy NumPy sampling and Fields. Grid, PSD and Fourier
+        setup remain on the CPU; spectral amplitudes and coordinates are
+        transferred once during construction. Sampling uses HCIPy's random
+        generators (CuPy generates samples on the GPU; strict uses a CPU fallback).
+    dtype : real floating dtype or None, optional
+        Output precision, either xp.float32 or xp.float64 (default) when xp is
+        specified. Random draws are cast to the corresponding complex precision.
+
+    Notes
+    -----
+    Keep the backend's current device unchanged between construction and sampling.
+    Seed replay is backend- and version-specific; matching NumPy/CuPy draws is
+    not promised. Repeated translation and synthesis remain device-resident.
+    Copies own independent coefficients and Fourier scratch arrays.
     '''
-    def __init__(self, psd, output_grid, oversample=1):
+    def __init__(self, psd, output_grid, oversample=1, *, xp=None, dtype=None):
+        if xp is None and dtype is not None:
+            raise ValueError('Specify xp to select an output dtype.')
+        if xp is not None:
+            dtype = xp.float64 if dtype is None else dtype
+            if dtype not in (xp.float32, xp.float64):
+                raise ValueError('dtype must be xp.float32 or xp.float64.')
         SpectralNoiseFactory.__init__(self, psd, output_grid)
 
         if not self.output_grid.is_regular:
@@ -129,11 +154,16 @@ class SpectralNoiseFactoryFFT(SpectralNoiseFactory):
         self.fourier = FastFourierTransform(self.output_grid, q=oversample)
         self.input_grid = self.fourier.output_grid
 
-        xp = output_grid.xp
-        self.period = output_grid.delta * xp.asarray(output_grid.shape)
+        # Frequency spacing includes the actual rounded FFT padding and is in
+        # coordinate order (x, y, ...), unlike the reversed array shape.
+        self.period = 2 * np.pi / self.input_grid.delta
 
         # * (2 * np.pi)**self.input_grid.ndim is due to conversion from PSD from "per Hertz" to "per radian", which yields a factor of 2pi per dimension
         self.C = np.sqrt(self.psd(self.input_grid) / self.input_grid.weights * (2 * np.pi)**self.input_grid.ndim)
+        self.coords = self.input_grid.separated_coords
+        if xp is not None:
+            self.C = NewStyleField(xp.asarray(np.asarray(self.C), dtype=dtype), self.input_grid)
+            self.coords = tuple(xp.asarray(coord, dtype=dtype) for coord in self.coords)
 
     def make_random(self, seed=None):
         '''Make a single realization of the spectral noise.
@@ -147,14 +177,30 @@ class SpectralNoiseFactoryFFT(SpectralNoiseFactory):
             If a BitGenerator or Generator are passed, these will be wrapped and used
             instead. Default: None.
 
+            With an explicit backend, an HCIPy RandomGenerator for that backend
+            may also be passed and is advanced in place. Other seeds initialize
+            a new backend generator. Its copy() can be used to replay draws.
+
         Returns
         -------
         SpectralNoiseFFT
             A realization of the spectral noise, that can be shifted and evaluated.
         '''
-        rng = np.random.default_rng(seed)
-
         N = self.input_grid.size
+
+        if isinstance(self.C, NewStyleField):
+            xp = array_namespace(self.C.data)
+            rng = seed if isinstance(seed, RandomGenerator) else make_random_generator(xp, seed)
+            dtype = xp.complex64 if self.C.dtype == xp.float32 else xp.complex128
+            real, imag = rng.normal(size=N), rng.normal(size=N)
+            if array_namespace(real) != xp or array_namespace(imag) != xp:
+                raise ValueError('The random generator must use the factory backend.')
+            if device(real) != device(self.C.data) or device(imag) != device(self.C.data):
+                raise ValueError('The random generator must use the factory device.')
+            values = xp.astype(real, dtype, copy=False) + 1j * xp.astype(imag, dtype, copy=False)
+            return SpectralNoiseFFT(self, NewStyleField(self.C.data * values, self.input_grid))
+
+        rng = np.random.default_rng(seed)
 
         C = self.C * (rng.standard_normal(N) + 1j * rng.standard_normal(N))
         C = Field(C, self.input_grid)
@@ -166,7 +212,7 @@ class SpectralNoiseFFT(SpectralNoise):
 
     Parameters
     ----------
-    factory : SpectralNoiseFactoryMultiscale
+    factory : SpectralNoiseFactoryFFT
         The factory used to generate this spectral noise instance.
     C : Field
         The PSD noise realization in Fourier space.
@@ -176,6 +222,10 @@ class SpectralNoiseFFT(SpectralNoise):
         self.C = C
 
         self.coords = C.grid.separated_coords
+        if isinstance(C, NewStyleField):
+            xp = array_namespace(C.data)
+            coords = factory.coords if C.grid is factory.input_grid else self.coords
+            self.coords = tuple(xp.asarray(coord, dtype=xp.real(C.data).dtype, device=device(C.data)) for coord in coords)
 
     def shift(self, shift):
         '''In-place shift the noise along the grid axes.
@@ -185,10 +235,21 @@ class SpectralNoiseFFT(SpectralNoise):
         shift : array_like
             The shift in the grid axes.
         '''
-        S = [shift[i] * self.coords[i] for i in range(len(self.coords))]
-        S = np.add.reduce(np.ix_(*S))
-
-        self.C *= np.exp(-1j * S.ravel())
+        shift_shape = shift.shape if hasattr(shift, 'shape') else (len(shift),)
+        if shift_shape != (len(self.coords),):
+            raise ValueError('The shift must contain one value per grid dimension.')
+        data = self.C.data if isinstance(self.C, NewStyleField) else np.asarray(self.C)
+        xp = array_namespace(data)
+        phase = 0
+        for i, coord in enumerate(self.coords):
+            component = shift[i]
+            if isinstance(component, np.generic):
+                component = component.item()
+            # Coordinate x varies fastest, hence maps to the last array axis.
+            shape = (1,) * (len(self.coords) - i - 1) + (-1,) + (1,) * i
+            phase = phase + xp.reshape(coord * component, shape)
+        phase = xp.asarray(xp.reshape(phase, (-1,)), dtype=data.dtype)
+        self.C *= xp.exp(-1j * phase)
 
     def __call__(self):
         '''Evaluate the noise on the pre-specified grid.
@@ -198,7 +259,10 @@ class SpectralNoiseFFT(SpectralNoise):
         Field
             The computed spectral noise.
         '''
-        return self.factory.fourier.backward(self.C).real
+        result = self.factory.fourier.backward(self.C)
+        if isinstance(result, NewStyleField):
+            return NewStyleField(array_namespace(result.data).real(result.data), result.grid)
+        return result.real
 
 class SpectralNoiseFactoryMultiscale(SpectralNoiseFactory):
     '''A spectral noise factory based on multiscale Fourier transforms.
