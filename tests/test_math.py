@@ -139,13 +139,13 @@ def test_random_generator_choice(xp, replace):
     a = xp.asarray([5, 10, 15, 20])
     samples = rng.choice(a, size=(n,), replace=replace)
     assert samples.shape == (n,)
-    assert all(s in [5, 10, 15, 20] for s in np.asarray(samples))
+    assert all(s in [5, 10, 15, 20] for s in to_numpy(samples))
 
     # Sample with weights (always with replacement)
     p = xp.asarray([0.1, 0.2, 0.3, 0.4])
     samples = rng.choice(a, size=(100,), replace=True, p=p)
     assert samples.shape == (100,)
-    assert all(s in [5, 10, 15, 20] for s in np.asarray(samples))
+    assert all(s in [5, 10, 15, 20] for s in to_numpy(samples))
 
 
 @pytest.mark.parametrize('distribution, args', [
@@ -166,7 +166,7 @@ def test_random_generator_reproducible(xp, distribution, args):
     samples2 = getattr(rng2, distribution)(size=(100,), **args[0])
 
     # Check that samples are identical
-    assert np.allclose(samples1, samples2)
+    np.testing.assert_array_equal(to_numpy(samples1), to_numpy(samples2))
 
 
 @pytest.mark.parametrize('distribution, args', [
@@ -187,7 +187,7 @@ def test_random_generator_copy(xp, distribution, args):
     samples2 = getattr(rng2, distribution)(size=(10,), **args[0])
 
     # Should be identical
-    assert np.allclose(samples1, samples2)
+    np.testing.assert_array_equal(to_numpy(samples1), to_numpy(samples2))
 
 
 @pytest.mark.parametrize('distribution, args', [

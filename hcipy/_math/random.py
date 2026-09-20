@@ -281,11 +281,36 @@ class RandomGeneratorNumpy(RandomGenerator):
 
 
 class RandomGeneratorCupy(RandomGeneratorNumpy):
+    '''GPU sampling with independently seeded, copyable per-call substreams.
+
+    CuPy's RandomState supports all distributions used here but has no public
+    state-copy API. A NumPy generator therefore supplies one uint64 seed per
+    call, while RandomState generates the samples on the current GPU. Copying
+    the seed generator reproduces subsequent calls without copying GPU state.
+
+    Reproducibility requires the same calls, shapes, device and software versions;
+    splitting a draw into several calls does not preserve the sample sequence.
+    Each call pays native generator setup overhead. No sample arrays are
+    generated on the CPU and the global CuPy random state is not modified.
+    CuPy's distribution restrictions (e.g. weighted choice without replacement)
+    still apply.
+    '''
     def __init__(self, seed=None):
         import cupy
-        super().__init__(cupy)
+        import numpy
+        RandomGenerator.__init__(self, cupy)
+        self._seed_rng = numpy.random.default_rng(seed)
 
-        self._rng = self._xp.random.default_rng(seed)
+    @property
+    def _rng(self):
+        import numpy
+        seed = int(self._seed_rng.integers(0, 2**64, dtype=numpy.uint64))
+        return self._xp.random.RandomState(seed)
+
+    def copy(self):
+        res = RandomGenerator.copy(self)
+        res._seed_rng = copy.deepcopy(self._seed_rng)
+        return res
 
 
 class RandomGeneratorTorch(RandomGenerator):
