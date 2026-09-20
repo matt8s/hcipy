@@ -1,5 +1,6 @@
 import numpy as np
-from ..field import Field
+from ..field import Field, NewStyleField
+from .._math.backends import array_namespace
 
 from dataclasses import dataclass
 import math
@@ -310,6 +311,12 @@ def multiplex_for_tensor_fields(func):
     def inner(self, field):
         if field.is_scalar_field:
             return func(self, field)
+        elif isinstance(field, NewStyleField):
+            xp = array_namespace(field.data)
+            components = xp.reshape(field.data, (-1, field.grid.size))
+            results = [func(self, NewStyleField(components[i, ...], field.grid)) for i in range(components.shape[0])]
+            data = xp.stack([result.data for result in results])
+            return NewStyleField(xp.reshape(data, field.tensor_shape + (-1,)), results[0].grid)
         else:
             f = field.reshape((-1, field.grid.size))
             res = [func(self, ff) for ff in f]

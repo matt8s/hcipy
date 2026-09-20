@@ -3,12 +3,14 @@ from collections.abc import Iterable
 
 import numpy as np
 from .fourier_transform import FourierTransform, ComputationalComplexity, multiplex_for_tensor_fields, _get_float_and_complex_dtype
-from ..field import Field, CartesianGrid, RegularCoords
+from ..field import Field, NewStyleField, CartesianGrid, RegularCoords
 from ..config import Configuration
 import numexpr as ne
 import math
 
 from .._math import fft as _fft_module
+from .._math.backends import array_namespace
+from array_api_compat import device
 
 def _allclose(a, b, rtol=1e-5, atol=1e-8):
     if len(a) != len(b):
@@ -192,6 +194,12 @@ class FastFourierTransform(FourierTransform):
     Fourier transform requires the input grid to be regular in Cartesian coordinates. Every
     number of dimensions is allowed.
 
+    With CPU setup grids, explicit NewStyleField inputs also support native
+    Array API FFT backends. Shift factors and scratch space are cached by
+    backend, device and complex precision. Repeated transforms keep field data
+    on the input device. Tensor components are transformed individually.
+    Instances own mutable scratch space and must not be used concurrently.
+
     Parameters
     ----------
     input_grid : Grid
@@ -257,6 +265,7 @@ class FastFourierTransform(FourierTransform):
         self.shape_out = self.output_grid.shape
         self.internal_shape = self.internal_grid.shape
         self.internal_array = np.zeros(self.internal_shape, 'complex')
+        self._array_api_key = None
 
         # Calculate the part of the array in which to insert the input field (for zeropadding).
         if self.internal_shape == self.shape_in:
@@ -320,6 +329,52 @@ class FastFourierTransform(FourierTransform):
         if np.isscalar(self.shift_output) and np.allclose(self.shift_output, 1):
             self.shift_output = None
 
+    def _operation_array_api(self, field, inverse):
+        '''Transform a backend Field using CPU setup and resident working arrays.
+        '''
+        data = field.data
+        xp = array_namespace(data)
+        dtype = xp.complex64 if data.dtype in (xp.float32, xp.complex64) else xp.complex128
+        # Store the namespace name rather than its module so warmed FFTs can
+        # still be deep-copied as part of spectral-noise realizations.
+        key = (xp.__name__, device(data), dtype)
+        if self._array_api_key != key:
+            self._array_api_array = xp.zeros(self.internal_shape, dtype=dtype, device=device(data))
+            self._array_api_shift_input = xp.asarray(self.shift_input, dtype=dtype, device=device(data))
+            self._array_api_shift_output = None if self.shift_output is None else xp.asarray(
+                self.shift_output, dtype=dtype, device=device(data))
+            self._array_api_key = key
+
+        work = self._array_api_array
+        shift_input = self._array_api_shift_input
+        shift_output = self._array_api_shift_output
+        shape = self.shape_out if inverse else self.shape_in
+        cutout = self.cutout_output if inverse else self.cutout_input
+        if cutout is not None:
+            work[...] = 0
+        target = work if cutout is None else work[cutout]
+        target[...] = xp.reshape(xp.astype(data, dtype, copy=False), shape)
+        if inverse:
+            target /= xp.reshape(shift_input, self.shape_out)
+        elif shift_output is not None:
+            target *= xp.reshape(shift_output, self.shape_in)
+
+        if not self.emulate_fftshifts:
+            work = xp.fft.ifftshift(work)
+        transform = _fft_module.ifftn if inverse else _fft_module.fftn
+        transformed = transform(work)
+        if not self.emulate_fftshifts:
+            transformed = xp.fft.fftshift(transformed)
+
+        cutout = self.cutout_input if inverse else self.cutout_output
+        result = xp.reshape(transformed if cutout is None else transformed[cutout], (-1,))
+        if inverse:
+            if shift_output is not None:
+                result /= shift_output
+        else:
+            result *= shift_input
+        return NewStyleField(result, self.input_grid if inverse else self.output_grid)
+
     @multiplex_for_tensor_fields
     def forward(self, field):
         '''Returns the forward Fourier transform of the :class:`Field` field.
@@ -334,6 +389,9 @@ class FastFourierTransform(FourierTransform):
         Field
             The Fourier transform of the field.
         '''
+        if isinstance(field, NewStyleField):
+            return self._operation_array_api(field, inverse=False)
+
         if self.cutout_input is None:
             self.internal_array[:] = field.reshape(self.shape_in)
 
@@ -378,6 +436,9 @@ class FastFourierTransform(FourierTransform):
         Field
             The inverse Fourier transform of the field.
         '''
+        if isinstance(field, NewStyleField):
+            return self._operation_array_api(field, inverse=True)
+
         if self.cutout_output is None:
             self.internal_array[:] = field.reshape(self.shape_out)
             self.internal_array /= self.shift_input.reshape(self.shape_out)
