@@ -11,6 +11,11 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
     after translation by more than `oversampling` times the extent of
     the input grid.
 
+    Changing the turbulence strength or outer scale rebuilds the spectrum on
+    the next evaluation using the same selected random realization, without
+    changing the current time or displacement. Use ``reset(True)`` to select
+    an independent realization and return to the origin.
+
     Parameters
     ----------
     input_grid : Grid
@@ -72,10 +77,17 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
             # Reset the original random generator to the current one. This
             # will essentially reset the randomness.
             self._original_rng = copy.deepcopy(self.rng)
-        else:
-            # Make a copy of the original random generator. This copy will be
-            # used as the source for all randomness.
-            self.rng = copy.deepcopy(self._original_rng)
+
+        self._make_noise()
+        self.evolve_until(0)
+
+    def _make_noise(self):
+        '''Rebuild the selected realization without changing time or position.
+        '''
+        # Replay the selected realization, rather than advancing to a new one
+        # when a turbulence parameter changes. Keep rng at its post-draw state
+        # so that the next independent reset selects the following realization.
+        self.rng = copy.deepcopy(self._original_rng)
 
         self.psd = power_spectral_density_von_karman(fried_parameter_from_Cn_squared(self.Cn_squared, 1), self.L0)
 
@@ -91,7 +103,7 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
         This property is not intended to be used by the user.
         '''
         if self._noise is None:
-            self.reset()
+            self._make_noise()
 
         return self._noise
 
@@ -122,7 +134,10 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
         return self.achromatic_screen / wavelength
 
     def evolve_until(self, t):
-        '''Evolve the atmospheric layer until a certain time.
+        '''Evolve the atmospheric layer to an absolute time.
+
+        The displacement is ``velocity * t``. Since the finite spectral
+        realization is retained, earlier times can be revisited exactly.
 
         Parameters
         ----------
@@ -130,6 +145,7 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
             The new time to evolve the phase screen to.
         '''
         self.center = self.velocity * t
+        self._t = t
         self._achromatic_screen = None
 
     @property
@@ -142,6 +158,7 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
     def Cn_squared(self, Cn_squared):  # noqa: N802
         self._Cn_squared = Cn_squared
         self._noise = None
+        self._achromatic_screen = None
 
     @property
     def outer_scale(self):
@@ -153,3 +170,4 @@ class FiniteAtmosphericLayer(AtmosphericLayer):
     def outer_scale(self, L0):  # noqa: N802
         self._L0 = L0
         self._noise = None
+        self._achromatic_screen = None

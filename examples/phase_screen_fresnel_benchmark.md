@@ -116,8 +116,12 @@ Full suite: **2296 passed, 209 remaining baseline failures, 617 skipped,
 stream/phase tests. No new failing test IDs. Lint and diff checks passed; slow
 tests unrun. Strict standalone phase example passed at 64².
 
-Next fix finite-layer state semantics: a reproduced `evolve_until(0.1)` left
+At measurement time, finite-layer state defects remained: `evolve_until(0.1)` left
 `layer.t == 0`; reset after displacement did not restore the initial screen;
 changing Cn² by a factor of four left cached phase unchanged. These existing
-defects are separate from resident snapshot execution and must be addressed
-before expanding atmosphere state management or GPU-native evolution.
+defects were subsequently fixed in the finite-layer state milestone. Ten new
+regressions cover time/rewind, both reset modes, parameter updates with cached
+and uncached phases, and preservation of the selected random stream. The default
+atmosphere suite passed (22 passed, 32 slow tests skipped); 59 targeted state and
+backend propagation checks also passed. These state fixes do not change the
+absolute-time, fixed-parameter snapshot workflow benchmarked above.

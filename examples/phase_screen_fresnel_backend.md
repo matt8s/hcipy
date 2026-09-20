@@ -42,8 +42,16 @@ Resident snapshot execution has no screen upload or CPU sample generation.
 This milestone does **not** claim GPU-native atmospheric evolution. The finite
 spectral representation has finite bandwidth and eventually repeats under
 translation; do not extrapolate this small-window example to long observations.
-The demonstration uses absolute `evolve_until(t)` and fresh layer instances for
-replay. Finite-layer reset/time/cache semantics are a separate follow-up audit.
+The demonstration uses absolute `evolve_until(t)`; finite layers report that
+time in `layer.t` and can revisit earlier times. `reset()` restores time and
+displacement to zero and replays the selected realization. `reset(True)` selects
+a new independent realization; subsequent `reset()` calls replay that selection.
+Changing `Cn_squared`, `outer_scale` or its alias `L0` invalidates the spectrum
+and phase, but preserves time/displacement and reuses the selected random draws.
+For example, multiplying Cn² by four doubles the phase at unchanged outer scale.
+Rebuilding after parameter changes does not advance the next independent draw.
+Existing explicit GPU snapshots retain their transferred values; upload the
+updated phase to use the new layer state on the GPU.
 
 Phase multiplication alone preserves power and its adjoint undoes the phase.
 After propagation, finite-window cropping can lose scattered light. The receiver
