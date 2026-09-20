@@ -1,7 +1,7 @@
 from __future__ import division
 
-from ..optics import OpticalElement
-from ..field import Field
+from ..optics import OpticalElement, PhaseApodizer
+from ..field import Field, NewStyleField
 from ..propagation import FresnelPropagator
 
 import numpy as np
@@ -141,11 +141,15 @@ class AtmosphericLayer(OpticalElement):
         return self.input_grid
 
     def forward(self, wf):
+        if isinstance(wf.electric_field, NewStyleField):
+            return PhaseApodizer(self.phase_for(wf.wavelength)).forward(wf)
         wf = wf.copy()
         wf.electric_field *= np.exp(1j * self.phase_for(wf.wavelength))
         return wf
 
     def backward(self, wf):
+        if isinstance(wf.electric_field, NewStyleField):
+            return PhaseApodizer(self.phase_for(wf.wavelength)).backward(wf)
         wf = wf.copy()
         wf.electric_field *= np.exp(-1j * self.phase_for(wf.wavelength))
         return wf

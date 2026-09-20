@@ -2,6 +2,9 @@ import numpy as np
 from .optical_element import OpticalElement
 from .wavefront import Wavefront
 import warnings
+from array_api_compat import device
+from ..field import NewStyleField
+from .._math.backends import array_namespace
 
 class Apodizer(OpticalElement):
     '''A thin apodizer.
@@ -41,6 +44,13 @@ class PhaseApodizer(OpticalElement):
     ----------
     phase : Field or scalar
         The phase apodization.
+
+    Notes
+    -----
+    For NewStyleField wavefronts, phase evaluation uses the wavefront's backend,
+    device and complex precision. A phase Field already on that device avoids
+    host transfers. CPU phase arrays are transferred on every application;
+    explicitly transfer a snapshot once for repeated device-resident use.
     '''
     def __init__(self, phase):
         self._phase = phase
@@ -49,14 +59,23 @@ class PhaseApodizer(OpticalElement):
     def phase(self):
         return self._phase
 
+    def _phase_factor(self, wavefront, sign):
+        field = wavefront.electric_field
+        if isinstance(field, NewStyleField):
+            xp = array_namespace(field.data)
+            phase = self.phase.data if isinstance(self.phase, NewStyleField) else self.phase
+            phase = xp.asarray(phase, dtype=field.dtype, device=device(field.data))
+            return xp.exp(sign * 1j * phase)
+        return np.exp(sign * 1j * self.phase)
+
     def forward(self, wavefront):
-        a = np.exp(1j * self.phase)
+        a = self._phase_factor(wavefront, 1)
         new_field = wavefront.electric_field * a
 
         return Wavefront(new_field, wavefront.wavelength, wavefront.input_stokes_vector)
 
     def backward(self, wavefront):
-        a_conj = np.exp(-1j * self.phase)
+        a_conj = self._phase_factor(wavefront, -1)
         new_field = wavefront.electric_field * a_conj
 
         return Wavefront(new_field, wavefront.wavelength, wavefront.input_stokes_vector)
