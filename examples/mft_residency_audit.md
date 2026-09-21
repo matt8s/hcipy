@@ -67,3 +67,20 @@ Upstream [Array API issue #335](https://github.com/ehpor/hcipy/issues/335) and
 work. PR #358 changes the same MFT methods, replaces explicit BLAS selection
 with `get_blas_funcs`, and moves tensor handling inside transforms. Coordinate
 the residency proposal with that work before choosing the final patch layout.
+
+## Validation status
+
+Direct-quadrature, inverse, Parseval, cache, ownership, deepcopy, tensor,
+precision, backend and two-device tests pass for NumPy, CuPy and
+`array_api_strict`. The full default suite retains its pre-existing CuPy math
+failures; no new failing test IDs were introduced by the resident MFT path.
+
+Clean-tree accuracy runs at 256², 512² and 1024² used exactly shared low-band
+coefficients. CuPy/legacy-CPU relative L2 differences were at most 3.40e-15 for
+complex128 and 1.06e-6 for complex64. Independent direct-quadrature relative
+errors were at most 1.26e-13 and 4.97e-7, respectively.
+
+No timing table is reported from these runs. An unrelated workload resumed on
+both GPUs during measurement and produced bimodal steady-state samples, so the
+timings do not establish uncontended throughput or speedup. Re-run the commands
+above on an idle device before making a performance claim.
