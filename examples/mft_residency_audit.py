@@ -1,6 +1,6 @@
-"""Profile the finite-screen MFT boundary and a resident matrix-product prototype.
+"""Profile the finite-screen MFT boundary and resident backend execution.
 
-This is an audit, not a backend implementation of MatrixFourierTransform.
+This audits MatrixFourierTransform and the existing CPU finite-screen stages.
 Run with CUDA_VISIBLE_DEVICES=0 and explicit CPU thread environment variables.
 """
 
@@ -84,31 +84,20 @@ def run(size, precision, repeats, cp):
     )
     if cp is not None:
         measure('gpu_pre_upload_sync', lambda: cp.cuda.get_current_stream().synchronize(), gpu=True)
-        # CPU synthesis above may have replaced the matrices with complex128.
-        mft._compute_matrices(np.dtype(precision))
-        left, right, weights = measure(
-            'gpu_matrix_upload', lambda: (cp.asarray(mft.M1.conj().T), cp.asarray(mft.M2.conj().T), cp.asarray(mft.weights_output)), gpu=True
-        )
         data = measure('gpu_coefficients_upload', lambda: cp.asarray(np.asarray(coefficients)), gpu=True)
-
-        def prototype():
-            return ((left @ data.reshape(mft.shape_output)) @ right).ravel() * weights
-
-        measure('gpu_first_mft_prototype', prototype, gpu=True)
-        measure('gpu_mft_prototype_warmup', prototype, 3, gpu=True)
-        output = measure('gpu_mft_prototype', prototype, repeats, gpu=True)
-        host = measure('gpu_download', lambda: cp.asnumpy(output), gpu=True)
+        field = NewStyleField(data, factory.input_grid_2)
+        gpu_mft = measure('cpu_gpu_mft_object_setup', lambda: hp.MatrixFourierTransform(grid, factory.input_grid_2))
+        measure('cpu_gpu_matrix_setup', lambda: gpu_mft._compute_matrices(np.dtype(precision), allocate_intermediate=False))
+        measure('gpu_matrix_upload', lambda: gpu_mft._compute_array_api_matrices(data), gpu=True)
+        output = measure('gpu_first_mft', lambda: gpu_mft.backward(field), gpu=True)
+        measure('gpu_mft_warmup', lambda: gpu_mft.backward(field), 3, gpu=True)
+        output = measure('gpu_mft', lambda: gpu_mft.backward(field), repeats, gpu=True)
+        host = measure('gpu_download', lambda: cp.asnumpy(output.data), gpu=True)
         error = float(np.linalg.norm(host - reference) / np.linalg.norm(reference))
-        result['prototype_relative_cpu_error'] = error
-        result['prototype_max_absolute_cpu_error'] = float(np.max(np.abs(host - reference)))
+        result['gpu_relative_cpu_error'] = error
+        result['gpu_max_absolute_cpu_error'] = float(np.max(np.abs(host - reference)))
         if not np.isfinite(error) or error > tolerance:
-            raise AssertionError(f'Prototype error {error} exceeds {tolerance}')
-        try:
-            mft.backward(NewStyleField(data, factory.input_grid_2))
-        except (TypeError, ValueError, NotImplementedError) as exc:
-            result['current_cupy_mft'] = dict(exception=type(exc).__name__, message=str(exc))
-        else:
-            result['current_cupy_mft'] = dict(exception=None)
+            raise AssertionError(f'GPU MFT error {error} exceeds {tolerance}')
         result['gpu_memory'] = dict(
             pool_used_bytes=cp.get_default_memory_pool().used_bytes(),
             pool_reserved_bytes=cp.get_default_memory_pool().total_bytes(),
