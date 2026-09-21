@@ -29,8 +29,8 @@ not be reported as resident-throughput evidence.
 The synthetic case uses a 1 m square, r0=0.15 m at the phase spectrum's reference
 wavelength, L0=10 m, inner scale=0.01 m, oversampling 8 and seed 42. High-frequency
 FFT and low-frequency MFT coefficients retain their existing partition. Matrix
-upload includes host conjugation and any first-use allocation overhead. The
-pre-upload synchronization is not a measurement of CUDA context initialization.
+upload includes any first-use allocation overhead. The pre-upload synchronization
+is not a measurement of CUDA context initialization.
 Case wall time includes the audit's reference checks; it excludes imports and
 metadata collection and is not an optical simulation's end-to-end time.
 
