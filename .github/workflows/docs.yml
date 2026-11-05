@@ -54,7 +54,7 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && github.repository == 'ehpor/hcipy' }}
     needs: build_docs
 
     steps:
