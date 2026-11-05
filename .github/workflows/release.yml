@@ -34,6 +34,7 @@ jobs:
 
   publish-to-pypi:
     name: Publish to PyPI
+    if: ${{ github.repository == 'ehpor/hcipy' }}
     needs: build
     runs-on: ubuntu-latest
     environment:
